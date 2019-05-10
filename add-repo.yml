@@ -1,0 +1,73 @@
+---
+- name: Create new inventory file
+  hosts: localhost
+
+  vars:
+     deployment_json_file:  "/etc/ansible/{{ tenant_id }}/{{ vpc_platform_id }}/Deployment_json.txt"
+     previous_deployment_json_file: "/etc/ansible/{{ tenant_id }}/{{ vpc_platform_id }}/Deployment_json.txtprevious"
+     deployment_json_data: "{{ lookup ('file', '{{ deployment_json_file }}' )|from_json }}"
+     tenant_id: "{{ tenant_id }}"
+     vpc_platform_id: "{{ vpc_platform_id }}"
+     ocp_version: "{{ ocp_version }}"
+
+  roles:
+    - { role: ansible-role-ocp-inventory, json_data: "{{ deployment_json_data }}", ocp_version: "{{ ocp_version }}" }
+
+- name: Drain all nodes
+  hosts: localhost
+
+  tasks:
+  - name: Drain all nodes
+    shell: oc adm drain {{item.split('.')[0]}} --force --delete-local-data --ignore-daemonsets --grace-period=60 --timeout=300s
+    ignore_errors: true
+    with_inventory_hostnames:
+     - nodes
+
+
+- name: Stop atomic-openshift-node service
+  hosts: nodes
+  become: true
+
+  tasks:
+  - name: Stop atomic-openshift-node service on OCP nodes
+    systemd:
+      name: atomic-openshift-node
+      state: stopped
+
+- name: import role container_runtime from Redhat
+  import_playbook: /usr/share/ansible/openshift-ansible/playbooks/container-runtime/config.yml
+
+- name: Restart master api and controllers pods
+  hosts: masters
+  become: true
+
+  tasks:
+  - name: Restart API pod
+    shell: /usr/local/bin/master-restart api
+
+  - name: Restart controller pod
+    shell: /usr/local/bin/master-restart controllers
+
+- name: Start atomic-openshift-node service
+  hosts: nodes
+  become: true
+
+  tasks:
+  - name: Start atomic-openshift-node service on OCP nodes
+    systemd:
+      name: atomic-openshift-node
+      state: started
+
+  - name: Sleep two minutes for OCP to start
+    pause:
+      minutes: 2
+
+
+- name: Un-drain all nodes
+  hosts: localhost
+
+  tasks:
+  - name: Un-drain all nodes
+    shell: oc adm uncordon {{item.split('.')[0]}}
+    with_inventory_hostnames:
+- nodes
